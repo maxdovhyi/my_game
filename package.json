@@ -1,0 +1,6 @@
+{
+  "name": "my-game-static",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Static PWA challenge MVP"
+}
