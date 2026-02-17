@@ -1,143 +1,310 @@
-import { levels } from './levels.js';
+import { createCampaign, evaluatePredicate, getTrackLabel } from './levels.js';
 
-const STORAGE_KEY = 'challenge_game_v1_progress';
-const META_KEY = 'challenge_game_v1_meta';
-const APP_VERSION = '1.0.1';
+const STORAGE_KEY = 'challenge_game_v2_state';
+const APP_VERSION = '2.0.0';
 const app = document.getElementById('app');
-const LEVEL1_MOTIVATION = 'Сейчас люди стали гиперстимулированы — и просто посидеть без стимула уже достижение. Ты понимаешь, что это только разминка. Но то, что ты можешь сделать это и не сорваться на что-то — уже шаг в правильном направлении.';
 
 const now = () => Date.now();
-const createEmpty = () => ({
-  currentIndex: 0,
-  completed: [],
-  answers: {},
-  startedAt: now(),
-  updatedAt: now(),
-  events: []
-});
-const createMeta = () => ({ devPanelOpen: false, headerTapCount: 0 });
+const kievToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kiev' }).format(new Date());
+
+function createState() {
+  return {
+    version: 2,
+    onboarding: {
+      step: 'intro',
+      assessment: { nofap: null, caffeine: null, strength: null },
+      ranking: [],
+      difficulty: null
+    },
+    campaign: {
+      levels: [],
+      currentIndex: 0,
+      pendingCompletion: false,
+      completionDate: null,
+      awaitingRiskChoice: false,
+      riskMood: null,
+      status: 'idle'
+    },
+    checkins: {},
+    events: [],
+    ui: { devOpen: false, taps: 0 },
+    startedAt: null
+  };
+}
 
 let state = loadState();
-let meta = loadMeta();
-let timerHandle;
-let celebration = null;
+let toast = '';
 let swUpdateAvailable = false;
 let waitingWorker = null;
 
 function safeParse(raw, fallback) {
   if (!raw) return fallback;
-  try {
-    return JSON.parse(raw);
-  } catch {
-    return fallback;
-  }
-}
-
-function loadMeta() {
-  return { ...createMeta(), ...safeParse(localStorage.getItem(META_KEY), {}) };
-}
-
-function saveMeta() {
-  localStorage.setItem(META_KEY, JSON.stringify(meta));
+  try { return JSON.parse(raw); } catch { return fallback; }
 }
 
 function sanitizeState(input) {
-  const base = createEmpty();
-  const value = typeof input === 'object' && input ? input : {};
-  const currentIndex = Number.isInteger(value.currentIndex) ? Math.max(0, Math.min(value.currentIndex, levels.length)) : 0;
-  const completed = Array.isArray(value.completed) ? value.completed.filter((id) => levels.some((lvl) => lvl.id === id)) : [];
-  const answers = value.answers && typeof value.answers === 'object' ? value.answers : {};
-  const events = Array.isArray(value.events) ? value.events.slice(-500) : [];
-  const startedAt = Number.isFinite(value.startedAt) ? value.startedAt : base.startedAt;
-  const updatedAt = Number.isFinite(value.updatedAt) ? value.updatedAt : base.updatedAt;
-  return { ...base, currentIndex, completed, answers, events, startedAt, updatedAt };
+  const base = createState();
+  const s = typeof input === 'object' && input ? input : {};
+  const out = { ...base, ...s };
+  out.onboarding = { ...base.onboarding, ...(s.onboarding || {}) };
+  out.onboarding.assessment = { ...base.onboarding.assessment, ...(s.onboarding?.assessment || {}) };
+  out.campaign = { ...base.campaign, ...(s.campaign || {}) };
+  out.campaign.levels = Array.isArray(s.campaign?.levels) ? s.campaign.levels : [];
+  out.checkins = typeof s.checkins === 'object' && s.checkins ? s.checkins : {};
+  out.events = Array.isArray(s.events) ? s.events.slice(-1000) : [];
+  out.ui = { ...base.ui, ...(s.ui || {}) };
+  return out;
 }
 
 function loadState() {
-  return sanitizeState(safeParse(localStorage.getItem(STORAGE_KEY), createEmpty()));
+  return sanitizeState(safeParse(localStorage.getItem(STORAGE_KEY), createState()));
 }
 
 function saveState() {
-  state.updatedAt = now();
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
 function track(type, extra = {}) {
-  state.events.push({ type, at: now(), level: state.currentIndex, ...extra });
+  state.events.push({ type, at: now(), ...extra });
   saveState();
 }
 
-function canComplete(level, answer) {
-  switch (level.type) {
-    case 'action': return !!answer?.pressed;
-    case 'timer': return !!answer?.done;
-    case 'multi_select': return (answer?.selected?.length || 0) >= level.completion.min;
-    case 'single_select': return !!answer?.selected;
-    case 'education_quiz': return answer?.selected === level.payload.correct;
-    default: return false;
+function currentLevel() {
+  return state.campaign.levels[state.campaign.currentIndex] || null;
+}
+
+function checkinFor(date) {
+  return state.checkins[date] || null;
+}
+
+function updateLevelProgressFromCheckin(date) {
+  const level = currentLevel();
+  if (!level || state.campaign.pendingCompletion || state.campaign.awaitingRiskChoice) return;
+  const checkin = checkinFor(date);
+  if (!checkin) return;
+
+  const passed = evaluatePredicate(level, checkin);
+  level.progressDays = passed ? Math.min(level.targetDays, level.progressDays + 1) : 0;
+  track('level_progress_updated', { levelId: level.id, passed, progress: level.progressDays, target: level.targetDays, date });
+
+  if (level.progressDays === level.targetDays) {
+    state.campaign.pendingCompletion = true;
+    state.campaign.completionDate = date;
+    track('level_completed', { levelId: level.id });
+    if (level.index === 1) track('time_to_first_complete', { ms: state.startedAt ? now() - state.startedAt : 0 });
+    if (level.index === 5) track('completion_lvl5');
   }
 }
 
-function getValidationError(level, answer) {
-  if (level.type === 'multi_select' && (answer?.selected?.length || 0) < level.completion.min) {
-    return `Нужно выбрать минимум ${level.completion.min}. Сейчас: ${answer?.selected?.length || 0}.`;
-  }
-  if (level.id === 'lvl3_main_problem' && !answer?.selected) {
-    return 'Выбери одну главную проблему, иначе не пойдём дальше.';
-  }
-  if (level.type === 'education_quiz') {
-    if (!answer?.selected) return 'Ответ обязателен: выбери один вариант.';
-    if (answer.selected !== level.payload.correct) return 'Неверно. Правильный ответ нужен для прохождения.';
-  }
-  return '';
-}
+function finishLevel() {
+  const level = currentLevel();
+  if (!level || !state.campaign.pendingCompletion) return;
 
-function getLevelAnswer(level) {
-  return state.answers[level.id] || {};
-}
-
-function setLevelAnswer(level, answer) {
-  state.answers[level.id] = answer;
+  const cDate = state.campaign.completionDate;
+  if (cDate && state.checkins[cDate]) state.checkins[cDate].locked = true;
+  state.campaign.awaitingRiskChoice = true;
   saveState();
   render();
 }
 
-function showCelebration(level) {
-  celebration = {
-    id: `${level.id}_${now()}`,
-    text: `🔥 ${level.title} пройден`
-  };
-  if (navigator.vibrate) navigator.vibrate([50, 80, 50]);
-  setTimeout(() => {
-    celebration = null;
+function applySafeFast(mode) {
+  const level = currentLevel();
+  if (!level || !state.campaign.awaitingRiskChoice || !state.campaign.riskMood) return;
+  level.completed = true;
+
+  const nextIndex = state.campaign.currentIndex + 1;
+  const next = state.campaign.levels[nextIndex] || null;
+  const date = state.campaign.completionDate;
+
+  state.campaign.pendingCompletion = false;
+  state.campaign.awaitingRiskChoice = false;
+  state.campaign.completionDate = null;
+
+  if (!next) {
+    state.campaign.status = 'finished';
+    saveState();
     render();
-  }, 1400);
-}
+    return;
+  }
 
-function completeLevel(level) {
-  if (!state.completed.includes(level.id)) state.completed.push(level.id);
-  if (level.index < levels.length - 1) state.currentIndex = level.index + 1;
-  else state.currentIndex = levels.length;
+  state.campaign.currentIndex = nextIndex;
+  next.progressDays = 0;
 
-  if (level.index === 0) track('activation');
-  if (level.index === 1) track('time_to_first_complete', { ms: now() - (state.startedAt || now()) });
-  if (level.index === 4) track('completion_lvl5');
-  track('level_completed', { id: level.id });
+  if (mode === 'fast') {
+    const todayCheckin = checkinFor(date);
+    const passNext = !!todayCheckin && evaluatePredicate(next, todayCheckin);
+    const carry = passNext ? 1 : 0;
+    next.progressDays = Math.min(carry, Math.max(0, next.targetDays - 1));
+  }
 
+  track('safe_fast_selected', { mode, mood: state.campaign.riskMood, nextLevel: next.id, carried: next.progressDays });
+  state.campaign.riskMood = null;
   saveState();
-  showCelebration(level);
   render();
 }
 
-function resetProgress() {
-  const ok = window.confirm('Сбросить весь прогресс и метрики?');
-  if (!ok) return;
+function resetCampaign() {
+  if (!window.confirm('Сбросить кампанию и все чек-ины?')) return;
   localStorage.removeItem(STORAGE_KEY);
-  localStorage.removeItem(META_KEY);
-  state = createEmpty();
-  meta = createMeta();
-  celebration = null;
+  state = createState();
   render();
+}
+
+function buildRanking(assessment) {
+  return Object.entries(assessment)
+    .sort((a, b) => b[1] - a[1])
+    .map(([k]) => k);
+}
+
+function buildBaseline() {
+  const entries = Object.values(state.checkins || {});
+  const lastThree = entries.slice(-3);
+  const doses = lastThree.length ? lastThree.reduce((s, c) => s + Number(c.caffDoses || 0), 0) / lastThree.length : 2;
+  return { caffeine: { doses } };
+}
+
+function startCampaign() {
+  const ranking = buildRanking(state.onboarding.assessment);
+  state.onboarding.ranking = ranking;
+  state.campaign.levels = createCampaign(ranking, state.onboarding.difficulty, buildBaseline());
+  state.campaign.currentIndex = 0;
+  state.campaign.status = 'active';
+  state.onboarding.step = 'home';
+  state.startedAt = state.startedAt || now();
+  track('activation');
+  saveState();
+  render();
+}
+
+function validateCheckin(form) {
+  const required = ['p', 'm', 'o', 'caffDoses', 'caffType', 'pushups', 'squats', 'abs'];
+  return required.every((key) => form[key] !== '' && form[key] !== null && form[key] !== undefined);
+}
+
+function saveCheckin() {
+  const date = kievToday();
+  const existing = checkinFor(date);
+  if (existing?.locked) {
+    toast = 'Чек-ин уже заблокирован после завершения уровня.';
+    render();
+    return;
+  }
+
+  const get = (sel) => app.querySelector(sel);
+  const data = {
+    date,
+    p: get('[name="p"]:checked')?.value === 'true',
+    m: get('[name="m"]:checked')?.value === 'true',
+    o: get('[name="o"]:checked')?.value === 'true',
+    urge: Number(get('#urge')?.value || 0),
+    waterFirst: get('#waterFirst')?.checked || false,
+    firstDoseDelayMin: Number(get('#firstDoseDelayMin')?.value || 0),
+    caffDoses: Number(get('#caffDoses')?.value || 0),
+    caffFirstTime: get('#caffFirstTime')?.value || '',
+    caffLastTime: get('#caffLastTime')?.value || '',
+    caffType: get('#caffType')?.value || '',
+    pushups: Number(get('#pushups')?.value || 0),
+    squats: Number(get('#squats')?.value || 0),
+    abs: Number(get('#abs')?.value || 0),
+    locked: false,
+    updatedAt: now()
+  };
+
+  if (!validateCheckin(data)) {
+    toast = 'Заполни обязательные поля по всем 3 секциям.';
+    render();
+    return;
+  }
+
+  state.checkins[date] = data;
+  track('checkin_saved', { date });
+  updateLevelProgressFromCheckin(date);
+  toast = 'Сохранено ✅';
+  saveState();
+  render();
+}
+
+function renderIntro() {
+  return `<section class="panel"><h1>🚀 Моя игра v2</h1><ul><li>Уровень апается только по цели текущего уровня.</li><li>Чек-ин честно фиксирует факты по 3 дорожкам.</li><li>После уровня выбираешь Safe/Fast.</li></ul><button class="primary" data-action="go-assessment">Start</button></section>`;
+}
+
+function renderAssessment() {
+  const a = state.onboarding.assessment;
+  const card = (id, title, hint) => `<div class="panel"><h3>${title}</h3><p>${hint}</p><div class="row">${[0,1,2,3,4].map((v)=>`<button class="chip ${a[id]===v?'active':''}" data-action="score" data-id="${id}" data-value="${v}">${v}</button>`).join('')}</div></div>`;
+  const can = Object.values(a).every((v) => v !== null);
+  return `<section class="panel"><h2>Assessment 0–4</h2>${card('nofap','🔞 NoFap','0=нет, 4=часто')}${card('caffeine','☕ Кофеин','0=редко, 4=много и поздно')}${card('strength','💪 Силовая','0=ничего, 4=стабильно')}<button class="primary" data-action="to-difficulty" ${can?'':'disabled'}>Продолжить</button></section>`;
+}
+
+function renderDifficulty() {
+  const d = state.onboarding.difficulty;
+  return `<section class="panel"><h2>Сложность</h2><div class="row">${['easy','medium','hard'].map((x)=>`<button class="chip ${d===x?'active':''}" data-action="difficulty" data-value="${x}">${x}</button>`).join('')}</div><button class="primary" data-action="start-campaign" ${d?'':'disabled'}>Начать кампанию</button></section>`;
+}
+
+function renderHistory(level) {
+  const days = [];
+  const base = new Date();
+  for (let i = 6; i >= 0; i -= 1) {
+    const d = new Date(base);
+    d.setDate(base.getDate() - i);
+    const date = new Intl.DateTimeFormat('en-CA', { timeZone: 'Europe/Kiev' }).format(d);
+    const c = checkinFor(date);
+    const ok = c ? evaluatePredicate(level, c) : false;
+    days.push(`<span class="hist ${!c ? 'miss' : ok ? 'ok' : 'fail'}" title="${date}">${!c ? '·' : ok ? '✅' : '❌'}</span>`);
+  }
+  return days.join(' ');
+}
+
+function renderHome() {
+  const level = currentLevel();
+  if (!level) return renderFinal();
+  const today = kievToday();
+  const todayCheckin = checkinFor(today);
+  const status = todayCheckin ? (todayCheckin.locked ? 'Заполнен и заблокирован' : 'Заполнен') : 'Не заполнен';
+  const pct = Math.round((level.progressDays / level.targetDays) * 100);
+
+  return `<section class="panel">
+    <h2 data-action="dev-tap">Сегодня · Level ${level.index}/25</h2>
+    <div class="panel"><strong>${level.title}</strong><small>${getTrackLabel(level.trackId)}</small><div>${level.progressDays}/${level.targetDays}</div><div class="bar"><span style="width:${pct}%"></span></div></div>
+    <div class="panel"><strong>Сегодняшний чек-ин:</strong> <span>${status}</span><button class="primary" data-action="open-checkin">Заполнить чек-ин</button></div>
+    <div class="panel"><strong>История 7 дней:</strong><div>${renderHistory(level)}</div></div>
+    <div class="row"><button class="ghost" data-action="reset">Сброс кампании</button></div>
+  </section>`;
+}
+
+function renderCheckin() {
+  const today = kievToday();
+  const c = checkinFor(today) || {};
+  const disabled = c.locked ? 'disabled' : '';
+  return `<section class="panel"><h2>Daily Check-in (${today})</h2>
+    <div class="panel"><h3>🔞 NoFap</h3>${['p','m','o'].map((k)=>`<div class="row">${k.toUpperCase()}: <label><input type="radio" name="${k}" value="false" ${(c[k]===false)?'checked':''} ${disabled}/> Нет</label><label><input type="radio" name="${k}" value="true" ${(c[k]===true)?'checked':''} ${disabled}/> Да</label></div>`).join('')}<label>Urge 0-3 <input id="urge" type="number" min="0" max="3" value="${c.urge ?? 0}" ${disabled}/></label></div>
+    <div class="panel"><h3>☕ Кофеин</h3><label><input id="waterFirst" type="checkbox" ${c.waterFirst?'checked':''} ${disabled}/> Вода перед первой дозой</label><label>Задержка первой дозы (мин) <input id="firstDoseDelayMin" type="number" value="${c.firstDoseDelayMin ?? 0}" ${disabled}/></label><label>Дозы <select id="caffDoses" ${disabled}>${['0','0.5','1','2','3'].map(v=>`<option ${Number(c.caffDoses)==Number(v)?'selected':''}>${v}</option>`).join('')}</select></label><label>Первая доза <input id="caffFirstTime" type="time" value="${c.caffFirstTime||''}" ${disabled}/></label><label>Последняя доза <input id="caffLastTime" type="time" value="${c.caffLastTime||''}" ${disabled}/></label><label>Тип <select id="caffType" ${disabled}>${['кофе','чай','энергетик','декаф','травяной'].map(t=>`<option ${c.caffType===t?'selected':''}>${t}</option>`).join('')}</select></label></div>
+    <div class="panel"><h3>💪 Силовая</h3><label>Отжимания <input id="pushups" type="number" value="${c.pushups ?? 0}" ${disabled}/></label><label>Приседания <input id="squats" type="number" value="${c.squats ?? 0}" ${disabled}/></label><label>Пресс <input id="abs" type="number" value="${c.abs ?? 0}" ${disabled}/></label></div>
+    <div class="row"><button class="primary" data-action="save-checkin" ${disabled}>Сохранить</button><button class="ghost" data-action="back-home">Отмена</button></div>
+  </section>`;
+}
+
+function renderLevelComplete() {
+  return `<section class="panel center"><h2>🏁 Уровень пройден</h2><p>Цель выполнена. Теперь зафиксируй завершение уровня.</p><button class="primary" data-action="finish-level">Завершить уровень</button></section>`;
+}
+
+function renderRisk() {
+  const mood = state.campaign.riskMood;
+  return `<section class="panel center"><h2>😬 Как ты? можешь слить?</h2><div class="row">${[['easy','😎 Легко'],['ok','😐 Норм'],['edge','😵 На грани']].map(([id,t])=>`<button class="chip ${mood===id?'active':''}" data-action="mood" data-value="${id}">${t}</button>`).join('')}</div><p>Выбери режим перехода:</p><div class="row"><button class="primary" data-action="safe" ${mood?'':'disabled'}>🏦 Safe</button><button class="primary" data-action="fast" ${mood?'':'disabled'}>⚡ Fast</button></div></section>`;
+}
+
+function renderFinal() {
+  const completed = state.campaign.levels.filter((l) => l.completed).length;
+  return `<section class="panel center"><h1>🎉 Кампания завершена</h1><p>Пройдено уровней: ${completed}/25</p><button class="primary" data-action="reset">Сбросить и начать заново</button></section>`;
+}
+
+function renderDevPanel() {
+  if (!state.ui.devOpen) return '';
+  return `<section class="panel"><h3>Dev panel</h3><p>Events: ${state.events.length}</p><div class="row"><button class="ghost" data-action="export-state">Export state</button><button class="ghost" data-action="export-events">Export events</button></div></section>`;
+}
+
+function renderUpdateBanner() {
+  if (!swUpdateAvailable) return '';
+  return `<div class="update">Доступно обновление <button class="ghost" data-action="apply-update">Обновить</button></div>`;
 }
 
 function exportJson(name, data) {
@@ -150,111 +317,15 @@ function exportJson(name, data) {
   URL.revokeObjectURL(url);
 }
 
-function renderProgress() {
-  const completedCount = state.completed.length;
-  const mainProblem = state.answers.lvl3_main_problem?.selected || '—';
-  const selectedProblems = state.answers.lvl2_problems?.selected?.length || 0;
-  const pct = Math.min(100, Math.round((Math.min(state.currentIndex, 10) / 10) * 100));
-  return `
-  <section class="panel">
-    <div class="row spread">
-      <strong data-action="toggle-dev">Level ${Math.min(state.currentIndex, 9)} / 10 · v${APP_VERSION}</strong>
-      <button class="ghost" data-action="reset">Сбросить прогресс</button>
-    </div>
-    <div class="bar"><span style="width:${pct}%"></span></div>
-    <small>Главная проблема: ${mainProblem} · Выбрано проблем: ${selectedProblems} · Уровней пройдено: ${completedCount}</small>
-    ${swUpdateAvailable ? '<div class="update">Доступно обновление <button data-action="apply-update" class="ghost">Обновить</button></div>' : ''}
-  </section>`;
-}
-
-function renderDevPanel() {
-  if (!meta.devPanelOpen) return '';
-  return `<section class="panel"><h3>Dev panel</h3><p>Событий: ${state.events.length}</p><div class="row"><button class="ghost" data-action="export-progress">Export progress</button><button class="ghost" data-action="export-events">Export events</button></div></section>`;
-}
-
-function buildFinalSummary() {
-  const answers = state.answers;
-  const selected = answers.lvl2_problems?.selected || [];
-  return `<ul class="summary"><li>Проблемы: ${selected.join(', ') || '—'}</li><li>Главная проблема: ${answers.lvl3_main_problem?.selected || '—'}</li><li>Обязательство 24ч: ${answers.lvl6_commit?.selected || '—'}</li><li>План спасения: ${(answers.lvl7_rescue?.selected || []).join(', ') || '—'}</li><li>Убранный триггер: ${answers.lvl8_trigger?.selected || '—'}</li></ul>`;
-}
-
-function renderCompletion() {
-  const allDone = state.currentIndex >= levels.length;
-  return `<section class="panel center"><h1>${allDone ? 'Забег завершён' : 'Уровень пройден'}</h1><p>${allDone ? 'Финал пройден. Ниже твой summary.' : 'Дави дальше.'}</p>${allDone ? buildFinalSummary() : ''}${allDone ? '<button data-action="reset" class="primary">Сбросить и начать заново</button>' : ''}</section>`;
-}
-
-function renderIntroBlock(level) {
-  if (level.index !== 0) return '';
-  return '<div class="intro-box"><strong>Привет! Ты попал в Моя игра.</strong><p>Это приложение создано, чтобы ты стал лучше. Жми «ПОГНАЛИ» и начинай свою игру!</p></div>';
-}
-
-function renderTimerArea(level, answer) {
-  const durationSec = level.payload.durationSec;
-  const startedAt = answer.startedAt || null;
-  const elapsedSec = startedAt ? Math.floor((now() - startedAt) / 1000) : 0;
-  const remaining = startedAt ? Math.max(0, durationSec - elapsedSec) : durationSec;
-  const running = !!startedAt && !answer.done;
-
-  if (running) {
-    clearTimeout(timerHandle);
-    timerHandle = setTimeout(render, 250);
-  }
-
-  if (running && remaining <= 0) {
-    setLevelAnswer(level, { ...answer, done: true, finishedAt: now() });
-    return { html: '', message: '', completeLabel: 'ЗАВЕРШИТЬ УРОВЕНЬ' };
-  }
-
-  const progress = Math.min(100, Math.floor((elapsedSec / durationSec) * 100));
-  const motivationalText = level.index === 1 ? LEVEL1_MOTIVATION.slice(0, Math.floor((LEVEL1_MOTIVATION.length * progress) / 100)) : '';
-
-  return {
-    html: `<div class="timer-block"><button class="primary ${running ? 'disabled' : ''}" data-action="start-timer" ${running ? 'disabled' : ''}>${running ? `ОСТАЛОСЬ ${remaining} сек` : level.payload.startLabel}</button><div class="bar"><span style="width:${progress}%"></span></div>${level.index === 1 ? `<p class="timer-text">${motivationalText || '...'}</p>` : ''}</div>`,
-    message: running ? 'Таймер идёт. Паузы нет.' : '',
-    completeLabel: 'ЗАВЕРШИТЬ УРОВЕНЬ'
-  };
-}
-
-function renderLevel(level) {
-  const answer = getLevelAnswer(level);
-  let content = '';
-  let message = getValidationError(level, answer);
-  let completeLabel = 'Следующий';
-
-  if (level.type === 'action') content = `<button class="primary pulse" data-action="press">${level.payload.buttonLabel}</button>`;
-  if (level.type === 'timer') {
-    const timerData = renderTimerArea(level, answer);
-    content = timerData.html;
-    if (!message) message = timerData.message;
-    completeLabel = timerData.completeLabel;
-  }
-  if (level.type === 'multi_select') {
-    content = `<div class="options">${level.payload.options.map((o) => `<label class="option"><input type="checkbox" data-value="${o}" ${answer.selected?.includes(o) ? 'checked' : ''}/> ${o}</label>`).join('')}</div>`;
-  }
-  if (level.type === 'single_select') {
-    const opts = level.id === 'lvl3_main_problem' ? (state.answers.lvl2_problems?.selected?.length ? state.answers.lvl2_problems.selected : level.payload.fallback) : level.payload.options;
-    content = `<div class="options">${opts.map((o) => `<label class="option"><input type="radio" name="single" data-value="${o}" ${answer.selected === o ? 'checked' : ''}/> ${o}</label>`).join('')}</div>`;
-  }
-  if (level.type === 'education_quiz') {
-    content = `<ul>${level.payload.bullets.map((b) => `<li>${b}</li>`).join('')}</ul><h3>${level.payload.question}</h3><div class="options">${level.payload.options.map((o) => `<label class="option"><input type="radio" name="quiz" data-value="${o}" ${answer.selected === o ? 'checked' : ''}/> ${o}</label>`).join('')}</div>`;
-  }
-
-  return `<section class="panel">${renderIntroBlock(level)}<h1>${level.title}</h1><p>${level.subtitle}</p><div class="content">${content}</div>${message ? `<div class="error">${message}</div>` : ''}${canComplete(level, answer) ? `<button class="primary" data-action="complete">${completeLabel}</button>` : ''}</section>`;
-}
-
-function renderCelebration() {
-  if (!celebration) return '';
-  return `<div class="celebration"><div class="flame">🔥</div><div class="cele-text">Уровень пройден</div></div>`;
-}
-
-function maybeToggleDevPanel() {
-  meta.headerTapCount += 1;
-  if (meta.headerTapCount >= 5) {
-    meta.devPanelOpen = !meta.devPanelOpen;
-    meta.headerTapCount = 0;
-    saveMeta();
-    render();
-  }
+function currentScreen() {
+  if (state.onboarding.step === 'intro') return renderIntro();
+  if (state.onboarding.step === 'assessment') return renderAssessment();
+  if (state.onboarding.step === 'difficulty') return renderDifficulty();
+  if (state.onboarding.step === 'checkin') return renderCheckin();
+  if (state.campaign.awaitingRiskChoice) return renderRisk();
+  if (state.campaign.pendingCompletion) return renderLevelComplete();
+  if (state.campaign.status === 'finished') return renderFinal();
+  return renderHome();
 }
 
 function wireSwUpdates() {
@@ -267,12 +338,12 @@ function wireSwUpdates() {
       render();
     }
     reg.addEventListener('updatefound', () => {
-      const newWorker = reg.installing;
-      if (!newWorker) return;
-      newWorker.addEventListener('statechange', () => {
-        if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
+      const nw = reg.installing;
+      if (!nw) return;
+      nw.addEventListener('statechange', () => {
+        if (nw.state === 'installed' && navigator.serviceWorker.controller) {
           swUpdateAvailable = true;
-          waitingWorker = newWorker;
+          waitingWorker = nw;
           render();
         }
       });
@@ -281,32 +352,69 @@ function wireSwUpdates() {
   });
 }
 
-function render() {
-  const level = levels[state.currentIndex];
-  app.innerHTML = `<div class="shell">${renderProgress()}${renderDevPanel()}${level ? renderLevel(level) : renderCompletion()}${renderCelebration()}</div>`;
+function wireCheckinFormValidation() {
+  const saveBtn = app.querySelector('[data-action="save-checkin"]');
+  if (!saveBtn) return;
+  const evalReady = () => {
+    const required = [
+      app.querySelector('[name="p"]:checked'),
+      app.querySelector('[name="m"]:checked'),
+      app.querySelector('[name="o"]:checked'),
+      app.querySelector('#caffDoses')?.value,
+      app.querySelector('#caffType')?.value,
+      app.querySelector('#pushups')?.value,
+      app.querySelector('#squats')?.value,
+      app.querySelector('#abs')?.value
+    ];
+    saveBtn.disabled = !required.every((v) => v !== null && v !== undefined && v !== '');
+  };
+  app.querySelectorAll('input,select').forEach((el) => el.addEventListener('input', evalReady));
+  evalReady();
+}
 
-  app.querySelector('[data-action="reset"]')?.addEventListener('click', resetProgress);
-  app.querySelector('[data-action="toggle-dev"]')?.addEventListener('click', maybeToggleDevPanel);
-  app.querySelector('[data-action="export-progress"]')?.addEventListener('click', () => exportJson('progress', state));
-  app.querySelector('[data-action="export-events"]')?.addEventListener('click', () => exportJson('events', state.events));
+function render() {
+  app.innerHTML = `<div class="shell"><div class="panel"><strong>Challenge v2</strong></div>${renderUpdateBanner()}${renderDevPanel()}${currentScreen()}${toast?`<div class="toast">${toast}</div>`:''}</div>`;
+
+  app.querySelector('[data-action="go-assessment"]')?.addEventListener('click', () => { state.onboarding.step = 'assessment'; saveState(); render(); });
+  app.querySelectorAll('[data-action="score"]').forEach((el) => el.addEventListener('click', () => {
+    state.onboarding.assessment[el.dataset.id] = Number(el.dataset.value);
+    saveState(); render();
+  }));
+  app.querySelector('[data-action="to-difficulty"]')?.addEventListener('click', () => { state.onboarding.step = 'difficulty'; saveState(); render(); });
+  app.querySelectorAll('[data-action="difficulty"]').forEach((el) => el.addEventListener('click', () => {
+    state.onboarding.difficulty = el.dataset.value;
+    saveState(); render();
+  }));
+  app.querySelector('[data-action="start-campaign"]')?.addEventListener('click', startCampaign);
+
+  app.querySelector('[data-action="open-checkin"]')?.addEventListener('click', () => { state.onboarding.step = 'checkin'; saveState(); render(); });
+  app.querySelector('[data-action="back-home"]')?.addEventListener('click', () => { state.onboarding.step = 'home'; saveState(); render(); });
+  app.querySelector('[data-action="save-checkin"]')?.addEventListener('click', () => { saveCheckin(); state.onboarding.step = 'home'; saveState(); render(); });
+  wireCheckinFormValidation();
+
+  app.querySelector('[data-action="finish-level"]')?.addEventListener('click', finishLevel);
+  app.querySelectorAll('[data-action="mood"]').forEach((el) => el.addEventListener('click', () => { state.campaign.riskMood = el.dataset.value; saveState(); render(); }));
+  app.querySelector('[data-action="safe"]')?.addEventListener('click', () => applySafeFast('safe'));
+  app.querySelector('[data-action="fast"]')?.addEventListener('click', () => applySafeFast('fast'));
+
+  app.querySelector('[data-action="reset"]')?.addEventListener('click', resetCampaign);
+  app.querySelector('[data-action="dev-tap"]')?.addEventListener('click', () => {
+    state.ui.taps += 1;
+    if (state.ui.taps >= 5) { state.ui.devOpen = !state.ui.devOpen; state.ui.taps = 0; }
+    saveState(); render();
+  });
+  app.querySelector('[data-action="export-state"]')?.addEventListener('click', () => exportJson('campaign-state', state));
+  app.querySelector('[data-action="export-events"]')?.addEventListener('click', () => exportJson('campaign-events', state.events));
   app.querySelector('[data-action="apply-update"]')?.addEventListener('click', () => waitingWorker?.postMessage('SKIP_WAITING'));
 
-  if (!level) return;
-
-  app.querySelector('[data-action="press"]')?.addEventListener('click', () => setLevelAnswer(level, { pressed: true, at: now() }));
-  app.querySelector('[data-action="start-timer"]')?.addEventListener('click', () => {
-    if (getLevelAnswer(level).startedAt) return;
-    track('timer_started', { id: level.id, duration: level.payload.durationSec });
-    setLevelAnswer(level, { startedAt: now(), done: false });
-  });
-
-  app.querySelectorAll('input[type="checkbox"]').forEach((el) => el.addEventListener('change', () => {
-    const selected = [...app.querySelectorAll('input[type="checkbox"]:checked')].map((n) => n.dataset.value);
-    setLevelAnswer(level, { selected });
-  }));
-  app.querySelectorAll('input[type="radio"]').forEach((el) => el.addEventListener('change', (e) => setLevelAnswer(level, { selected: e.target.dataset.value })));
-  app.querySelector('[data-action="complete"]')?.addEventListener('click', () => canComplete(level, getLevelAnswer(level)) && completeLevel(level));
+  setTimeout(() => {
+    if (toast) {
+      toast = '';
+      render();
+    }
+  }, 1400);
 }
+
 
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState === 'hidden') track('backgrounded');

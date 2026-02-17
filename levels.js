@@ -1,126 +1,163 @@
-export const BASE_PROBLEMS = [
-  'Кофеин',
-  'Сахар',
-  'Переедание',
-  'Скролл',
-  'Порно',
-  'Сон',
-  'Стресс',
-  'Фокус',
-  'Энергия',
-  'Активность',
-  'Хаос'
-];
+export const TRACKS = {
+  nofap: { id: 'nofap', label: '🔞 NoFap (PMO)' },
+  caffeine: { id: 'caffeine', label: '☕ Кофеин' },
+  strength: { id: 'strength', label: '💪 Силовая' }
+};
 
-export const levels = [
-  {
-    id: 'lvl0_start',
-    index: 0,
-    title: 'LVL0 — Вход',
-    subtitle: 'Ты уже в игре. Нажми ПОГНАЛИ',
-    type: 'action',
-    payload: { buttonLabel: 'ПОГНАЛИ' },
-    completion: { kind: 'button_press' },
-    saveAnswerKeys: []
-  },
-  {
-    id: 'lvl1_timer60',
-    index: 1,
-    title: 'LVL1 — 60 секунд тишины',
-    subtitle: 'Нажми СТАРТ. Без паузы. Без побега.',
-    type: 'timer',
-    payload: { durationSec: 60, startLabel: 'СТАРТ' },
-    completion: { kind: 'timer_finished', durationSec: 60 },
-    saveAnswerKeys: ['lvl1FinishedAt']
-  },
-  {
-    id: 'lvl2_problems',
-    index: 2,
-    title: 'LVL2 — Признай проблемы',
-    subtitle: 'Выбери минимум 3 пункта.',
-    type: 'multi_select',
-    payload: { options: BASE_PROBLEMS, minSelected: 3 },
-    completion: { kind: 'min_selected', min: 3 },
-    saveAnswerKeys: ['selectedProblems']
-  },
-  {
-    id: 'lvl3_main_problem',
-    index: 3,
-    title: 'LVL3 — Главная проблема №1',
-    subtitle: 'Выбери один главный триггер.',
-    type: 'single_select',
-    payload: { fallback: BASE_PROBLEMS.slice(0, 5) },
-    completion: { kind: 'selected_one' },
-    saveAnswerKeys: ['mainProblem']
-  },
-  {
-    id: 'lvl4_edu_quiz',
-    index: 4,
-    title: 'LVL4 — Мини-обучение',
-    subtitle: 'Прочитай и ответь правильно.',
-    type: 'education_quiz',
-    payload: {
-      bullets: [
-        'Привычка = триггер → действие → награда.',
-        'Среда сильнее мотивации.',
-        'Желание — это сигнал системы, а не приказ.',
-        'Убери триггер — ослабишь импульс.'
-      ],
-      question: 'Что сильнее влияет на привычку?',
-      options: ['Мотивация', 'Триггер и среда'],
-      correct: 'Триггер и среда'
-    },
-    completion: { kind: 'quiz_correct' },
-    saveAnswerKeys: ['quizAnswerLvl4']
-  },
-  {
-    id: 'lvl5_timer300',
-    index: 5,
-    title: 'LVL5 — 5 минут в стену',
-    subtitle: 'Сиди спокойно 5 минут. Без паузы.',
-    type: 'timer',
-    payload: { durationSec: 300, startLabel: 'НАЧАТЬ 5 МИН' },
-    completion: { kind: 'timer_finished', durationSec: 300 },
-    saveAnswerKeys: ['lvl5FinishedAt']
-  },
-  {
-    id: 'lvl6_commit',
-    index: 6,
-    title: 'LVL6 — Обязательство 24 часа',
-    subtitle: 'От чего откажешься на сутки?',
-    type: 'single_select',
-    payload: { options: ['Кофеин', 'Сладкое', 'Порно', 'Скролл'] },
-    completion: { kind: 'selected_one' },
-    saveAnswerKeys: ['dayCommitment']
-  },
-  {
-    id: 'lvl7_rescue',
-    index: 7,
-    title: 'LVL7 — План спасения',
-    subtitle: 'Если сорвался — выбери минимум 2 действия.',
-    type: 'multi_select',
-    payload: { options: ['Вода', 'Прогулка', 'Дыхание', 'Холодный душ', '10 приседаний'], minSelected: 2 },
-    completion: { kind: 'min_selected', min: 2 },
-    saveAnswerKeys: ['rescuePlan']
-  },
-  {
-    id: 'lvl8_trigger',
-    index: 8,
-    title: 'LVL8 — Удали триггер',
-    subtitle: 'Что уберёшь из среды прямо сейчас?',
-    type: 'single_select',
-    payload: { options: ['Удалить приложение', 'Убрать сладкое', 'Выключить уведомления', 'Поставить блокер'] },
-    completion: { kind: 'selected_one' },
-    saveAnswerKeys: ['removedTrigger']
-  },
-  {
-    id: 'lvl9_final',
-    index: 9,
-    title: 'LVL9 — Финал',
-    subtitle: 'Клятва честности и старт забега.',
-    type: 'action',
-    payload: { buttonLabel: 'Я НАЧИНАЮ' },
-    completion: { kind: 'button_press' },
-    saveAnswerKeys: ['finalStarted']
+const MEDIUM_TEMPLATES = {
+  nofap: [
+    { title: '1 день без P', targetDays: 1, predicateType: 'NO_P' },
+    { title: '1 день без PMO', targetDays: 1, predicateType: 'NO_PMO' },
+    { title: '2 дня без PMO', targetDays: 2, predicateType: 'NO_PMO' },
+    { title: '3 дня без PMO', targetDays: 3, predicateType: 'NO_PMO' },
+    { title: '5 дней без PMO', targetDays: 5, predicateType: 'NO_PMO' },
+    { title: '7 дней без PMO', targetDays: 7, predicateType: 'NO_PMO' },
+    { title: '10 дней без PMO', targetDays: 10, predicateType: 'NO_PMO' },
+    { title: '14 дней без PMO', targetDays: 14, predicateType: 'NO_PMO' }
+  ],
+  caffeine: [
+    { title: '1 день: вода перед первой дозой', targetDays: 1, predicateType: 'CAFF_WATER_FIRST' },
+    { title: '2 дня: первая доза через 60+ мин', targetDays: 2, predicateType: 'CAFF_FIRST_DELAY', params: { minMinutes: 60 } },
+    { title: '3 дня: микродозинг baseline-0.5', targetDays: 3, predicateType: 'CAFF_MICRO_BASELINE' },
+    { title: '3 дня: последняя доза до 16:00', targetDays: 3, predicateType: 'CAFF_LAST_BEFORE', params: { time: '16:00' } },
+    { title: '4 дня: 1 доза заменена на чай', targetDays: 4, predicateType: 'CAFF_TYPE_INCLUDES', params: { value: 'чай' } },
+    { title: '4 дня: последняя стим-доза декаф/травяной', targetDays: 4, predicateType: 'CAFF_TYPE_IN', params: { values: ['декаф', 'травяной'] } },
+    { title: '2 дня: 0 кофеина', targetDays: 2, predicateType: 'CAFF_ZERO' },
+    { title: '7 дней: ≤1 доза и до 14:00', targetDays: 7, predicateType: 'CAFF_ONE_BEFORE', params: { maxDoses: 1, time: '14:00' } }
+  ],
+  strength: [
+    { title: '30/50/30 (1 день)', targetDays: 1, predicateType: 'STRENGTH_MIN', params: { pushups: 30, squats: 50, abs: 30 } },
+    { title: '50/80/40 (1 день)', targetDays: 1, predicateType: 'STRENGTH_MIN', params: { pushups: 50, squats: 80, abs: 40 } },
+    { title: '70/100/50 (2 дня)', targetDays: 2, predicateType: 'STRENGTH_MIN', params: { pushups: 70, squats: 100, abs: 50 } },
+    { title: '90/120/60 (2 дня)', targetDays: 2, predicateType: 'STRENGTH_MIN', params: { pushups: 90, squats: 120, abs: 60 } },
+    { title: '110/130/70 (2 дня)', targetDays: 2, predicateType: 'STRENGTH_MIN', params: { pushups: 110, squats: 130, abs: 70 } },
+    { title: '130/140/80 (3 дня)', targetDays: 3, predicateType: 'STRENGTH_MIN', params: { pushups: 130, squats: 140, abs: 80 } },
+    { title: '150/150 (+пресс бонус)', targetDays: 1, predicateType: 'STRENGTH_MIN', params: { pushups: 150, squats: 150, abs: 0 } },
+    { title: '150/150 (2 дня)', targetDays: 2, predicateType: 'STRENGTH_MIN', params: { pushups: 150, squats: 150, abs: 0 } }
+  ]
+};
+
+function clone(obj) {
+  return JSON.parse(JSON.stringify(obj));
+}
+
+function applyDifficulty(trackId, levels, difficulty) {
+  const out = clone(levels);
+  if (difficulty === 'easy') {
+    if (trackId === 'nofap') out[7].targetDays = 10;
+    if (trackId === 'caffeine') {
+      out[6].targetDays = 1;
+      out[7].targetDays = 5;
+    }
+    if (trackId === 'strength') {
+      out[2].targetDays = 1;
+      out[3].targetDays = 1;
+      out[4].targetDays = 1;
+      out[5].targetDays = 2;
+    }
   }
-];
+
+  if (difficulty === 'hard') {
+    if (trackId === 'nofap') {
+      out[0] = { ...out[0], title: '1 день без PMO', predicateType: 'NO_PMO' };
+      out[1] = { ...out[1], title: '2 дня без PMO', targetDays: 2, predicateType: 'NO_PMO' };
+      out[7].targetDays = 18;
+    }
+    if (trackId === 'caffeine') {
+      out[6].targetDays = 3;
+      out[7].targetDays = 10;
+    }
+    if (trackId === 'strength') {
+      out[5].targetDays = 4;
+      out[6].targetDays = 2;
+      out[7].targetDays = 3;
+    }
+  }
+  return out;
+}
+
+export function getTrackLabel(trackId) {
+  return TRACKS[trackId]?.label || trackId;
+}
+
+export function createCampaign(rankedTracks, difficulty, baseline = {}) {
+  const levels = [];
+  rankedTracks.forEach((trackId) => {
+    const templates = applyDifficulty(trackId, MEDIUM_TEMPLATES[trackId], difficulty);
+    templates.forEach((template, i) => {
+      levels.push({
+        id: `${trackId}_${i + 1}`,
+        trackId,
+        title: `${getTrackLabel(trackId)} · ${template.title}`,
+        targetDays: template.targetDays,
+        predicateType: template.predicateType,
+        params: { ...(template.params || {}), baseline: baseline[trackId] || {} },
+        progressDays: 0,
+        completed: false
+      });
+    });
+  });
+
+  levels.push({
+    id: 'final_boss_25',
+    trackId: 'strength',
+    title: '🐉 Финальный босс: 150 отжиманий + 150 приседаний 7 дней',
+    targetDays: difficulty === 'easy' ? 5 : difficulty === 'hard' ? 10 : 7,
+    predicateType: 'STRENGTH_MIN',
+    params: { pushups: 150, squats: 150, abs: 0 },
+    progressDays: 0,
+    completed: false
+  });
+
+  return levels.map((level, index) => ({ ...level, index: index + 1 }));
+}
+
+function timeToMinutes(value) {
+  if (!value || !value.includes(':')) return null;
+  const [h, m] = value.split(':').map((n) => Number(n));
+  if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
+  return h * 60 + m;
+}
+
+export function evaluatePredicate(level, checkin) {
+  const p = level.params || {};
+  switch (level.predicateType) {
+    case 'NO_P':
+      return checkin.p === false;
+    case 'NO_PMO':
+      return checkin.p === false && checkin.m === false && checkin.o === false;
+    case 'CAFF_WATER_FIRST':
+      return !!checkin.waterFirst;
+    case 'CAFF_FIRST_DELAY':
+      return Number(checkin.firstDoseDelayMin || 0) >= Number(p.minMinutes || 60);
+    case 'CAFF_MICRO_BASELINE': {
+      const baseline = Number(p.baseline?.doses ?? 2);
+      return Number(checkin.caffDoses) <= Math.max(0, baseline - 0.5);
+    }
+    case 'CAFF_LAST_BEFORE': {
+      if (Number(checkin.caffDoses) === 0) return true;
+      const last = timeToMinutes(checkin.caffLastTime);
+      const cap = timeToMinutes(p.time || '16:00');
+      return last !== null && cap !== null && last <= cap;
+    }
+    case 'CAFF_TYPE_INCLUDES':
+      return String(checkin.caffType || '').includes(String(p.value || 'чай'));
+    case 'CAFF_TYPE_IN':
+      return (p.values || []).includes(checkin.caffType);
+    case 'CAFF_ZERO':
+      return Number(checkin.caffDoses) === 0;
+    case 'CAFF_ONE_BEFORE': {
+      const dosesOk = Number(checkin.caffDoses) <= Number(p.maxDoses || 1);
+      const last = timeToMinutes(checkin.caffLastTime);
+      const cap = timeToMinutes(p.time || '14:00');
+      const timeOk = Number(checkin.caffDoses) === 0 || (last !== null && cap !== null && last <= cap);
+      return dosesOk && timeOk;
+    }
+    case 'STRENGTH_MIN':
+      return Number(checkin.pushups || 0) >= Number(p.pushups || 0)
+        && Number(checkin.squats || 0) >= Number(p.squats || 0)
+        && Number(checkin.abs || 0) >= Number(p.abs || 0);
+    default:
+      return false;
+  }
+}
